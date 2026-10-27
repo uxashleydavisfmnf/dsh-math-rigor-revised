@@ -323,61 +323,64 @@ def _check_entry_inner(session: ProofSession, entry: Entry, rule: str) -> Entry:
     # Non-logical justification: try to upgrade it to a machine check, and for
     # rules that genuinely assert entailment treat a counterexample as an error.
     #
-    # A step that cites nothing is not exempt: `arithmetic`/`algebra`/
+    # A step that cites nothing is not exempt.  `arithmetic`/`algebra`/
     # `computation` assert their statement outright, so a false one (`2 + 2 = 5`
     # justified by `arithmetic`) has to be refuted rather than quietly recorded
-    # as "unchecked".  The same query is cheap for ground claims -- z3 answers in
-    # milliseconds -- and a short budget keeps a hard symbolic rewrite from
-    # stalling the audit.
-    if premises or rule in ENTAILMENT_REQUIRED:
-        outcome = check_entailment(premises, entry.statement, declared_sorts=session.variables,
-                                   functions=session.functions,
-                                   timeout_ms=2500 if not premises else 15000)
-        if outcome.status == STATUS_PROVEN:
-            entry.verdict = STEP_VERIFIED
-            entry.machine_checked = True
+    # as "unchecked".  Neither is any *other* premiseless rule: labelling the
+    # same claim `premise` or `machine_verified` used to be enough to have it
+    # filed as "unchecked", and the whole session then audited as
+    # `sound_with_gaps` even though its conclusion was arithmetic nonsense.
+    # The query is cheap when the claim is concrete, so every premiseless step
+    # gets one short attempt: a refutation is reported, silence changes nothing.
+    outcome = check_entailment(premises, entry.statement, declared_sorts=session.variables,
+                               functions=session.functions,
+                               timeout_ms=15000 if premises else 2500)
+    if outcome.status == STATUS_PROVEN:
+        entry.verdict = STEP_VERIFIED
+        entry.machine_checked = True
+        entry.detail = (
+            "the statement was machine-verified on its own"
+            if not premises else
+            f"the cited premises were machine-verified to entail this statement "
+            f"({outcome.method})"
+        )
+        return entry
+    if outcome.status == STATUS_REFUTED:
+        entry.verdict = STEP_REFUTED
+        entry.machine_checked = True
+        if premises:
             entry.detail = (
-                "the statement was machine-verified on its own"
-                if not premises else
-                f"the cited premises were machine-verified to entail this statement "
-                f"({outcome.method})"
+                f"this {rule} step is false: counterexample: {outcome.model}. "
+                "Either cite the premises the rewrite actually uses, or fix the step."
             )
-            return entry
-        if outcome.status == STATUS_REFUTED and rule in ENTAILMENT_REQUIRED:
-            entry.verdict = STEP_REFUTED
-            entry.machine_checked = True
-            entry.detail = (
-                f"this {rule} step is false: "
-                + (f"counterexample: {outcome.model}."
-                   if premises else
-                   "the statement does not hold as written.")
-                + ("" if not premises else
-                   " Either cite the premises the rewrite actually uses, or fix the step.")
-            )
-            return entry
-        if outcome.status == STATUS_REFUTED:
-            entry.detail = (
-                "the cited premises alone do not entail this statement, which is "
-                f"expected for a {rule} step; the justification text is what must be reviewed"
-            )
-        elif outcome.status in (STATUS_UNPARSEABLE, STATUS_ERROR):
-            # Neither case is a step awaiting human review:
-            #   * unparseable -- the text is not a formula at all;
-            #   * error       -- it parses (`n is an integer` really does read as
-            #                    the product n*is*an*integer) but cannot be encoded
-            #                    as a truth value.
-            # Recording either as "unchecked" would let a nonsense claim sit in a
-            # proof without ever being called wrong.
-            entry.verdict = STEP_INVALID
-            entry.machine_checked = True
-            entry.detail = (
-                f"the statement is not a well-formed formula ({outcome.reason}). "
-                "Domain declarations belong in the `variables` argument of the tool "
-                "call, not in the statement."
-            )
-            return entry
         else:
-            entry.detail = f"the entailment check was inconclusive ({outcome.reason or outcome.method})"
+            counterexample = (
+                f"counterexample: {outcome.model}. " if outcome.model else ""
+            )
+            entry.detail = (
+                f"this {rule} step is false as written: {counterexample}"
+                "A step that cites nothing is granted outright, so it has to be true. "
+                "Hypotheses taken from the problem belong in proof_add_given, not in a "
+                f"`{rule}` step."
+            )
+        return entry
+    if outcome.status in (STATUS_UNPARSEABLE, STATUS_ERROR):
+        # Neither case is a step awaiting human review:
+        #   * unparseable -- the text is not a formula at all;
+        #   * error       -- it parses (`n is an integer` really does read as
+        #                    the product n*is*an*integer) but cannot be encoded
+        #                    as a truth value.
+        # Recording either as "unchecked" would let a nonsense claim sit in a
+        # proof without ever being called wrong.
+        entry.verdict = STEP_INVALID
+        entry.machine_checked = True
+        entry.detail = (
+            f"the statement is not a well-formed formula ({outcome.reason}). "
+            "Domain declarations belong in the `variables` argument of the tool "
+            "call, not in the statement."
+        )
+        return entry
+    entry.detail = f"the entailment check was inconclusive ({outcome.reason or outcome.method})"
     entry.verdict = STEP_UNCHECKED
     entry.machine_checked = False
     return entry

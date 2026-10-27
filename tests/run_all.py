@@ -16,6 +16,7 @@ MODULES = [
     "test_verify.py",
     "test_proof.py",
     "test_regressions.py",
+    "test_real_projects.py",
     "test_mcp_stdio.py",
     "test_security.py",
 ]

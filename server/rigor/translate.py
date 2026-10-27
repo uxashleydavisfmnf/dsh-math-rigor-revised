@@ -278,13 +278,21 @@ _ASSUMPTION_FLAGS = {
 
 _SYMPY_FUNCS = {
     "sqrt": sp.sqrt, "abs": sp.Abs, "Abs": sp.Abs, "exp": sp.exp,
-    "ln": sp.log, "log": sp.log, "sin": sp.sin, "cos": sp.cos, "tan": sp.tan,
+    "ln": sp.log, "log": sp.log, "lg": sp.log, "sin": sp.sin, "cos": sp.cos,
+    "tan": sp.tan, "tg": sp.tan,
     "cot": sp.cot, "sec": sp.sec, "csc": sp.csc, "asin": sp.asin,
     "acos": sp.acos, "atan": sp.atan, "sinh": sp.sinh, "cosh": sp.cosh,
     "tanh": sp.tanh, "floor": sp.floor, "ceil": sp.ceiling, "sign": sp.sign,
     "min": sp.Min, "max": sp.Max, "gcd": sp.gcd, "lcm": sp.lcm,
     "factorial": sp.factorial, "binomial": sp.binomial, "re": sp.re, "im": sp.im,
     "conjugate": sp.conjugate, "gamma": sp.gamma, "erf": sp.erf,
+    # The `arc…` spellings are what most textbooks and most callers write.  Without
+    # them `arctan` fell through to an undefined sympy Function, so
+    # `diff arctan(x)` answered `Derivative(arctan(x), x)` -- an unevaluated
+    # derivative presented as if it were the result.
+    "arcsin": sp.asin, "arccos": sp.acos, "arctan": sp.atan, "arctg": sp.atan,
+    "arcsinh": sp.asinh, "arccosh": sp.acosh, "arctanh": sp.atanh,
+    "asinh": sp.asinh, "acosh": sp.acosh, "atanh": sp.atanh,
 }
 
 
@@ -794,6 +802,15 @@ def _pow_to_z3(base: Any, exponent_node: Node, ctx: Z3Context) -> Any:
             return result if e >= 1 else 1
         return base ** e
     exponent = ast_to_z3(exponent_node, ctx, False)
+    symbolic = not isinstance(exponent, (int, float))
+    if is_int_term(base) and is_int_term(exponent) and symbolic:
+        # Keep an integer power in the integers.  Lifting it to the reals makes
+        # z3 reason about `2 ** ToReal(n)`, which is the transcendental power
+        # theory: measured, `forall n in N: n >= 5 -> 2^n > n^2` then ignored its
+        # own 2000ms timeout and was still running at 40s, so an ordinary
+        # exercise hung the whole server.  In the integer fragment the same query
+        # answers "unknown" in 2s and `2^n > 0` is proved outright.
+        return base ** exponent
     if is_int_term(base):
         ctx.notes.append(
             "integer base raised to a symbolic exponent was lifted to the reals; "
@@ -802,6 +819,16 @@ def _pow_to_z3(base: Any, exponent_node: Node, ctx: Z3Context) -> Any:
         base = z3.ToReal(base) if not isinstance(base, int) else float(base)
     if is_int_term(exponent) and not isinstance(exponent, (int, float)):
         exponent = z3.ToReal(exponent)
+    if symbolic and isinstance(base, (int, float)):
+        # A numeral base with a symbolic real exponent is genuinely
+        # transcendental (`2^x`), and z3's handler for it does not honour the
+        # solver timeout.  Refuse it instead of freezing the caller.
+        raise TranslateError(
+            "a constant base raised to a symbolic exponent (such as 2^n) is beyond "
+            "what the SMT backend can decide for real exponents; state the claim over "
+            "the integers, as `forall n in Z: 2^n > n^2`, or prove it by induction "
+            "with verify_induction"
+        )
     return base ** exponent
 
 

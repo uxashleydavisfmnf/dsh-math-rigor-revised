@@ -10,10 +10,17 @@
 
 [![GitHub stars](https://img.shields.io/github/stars/bauerelizabeth07139/dsh-math-rigor.svg?color=gold)]() [![GitHub forks](https://img.shields.io/github/forks/bauerelizabeth07139/dsh-math-rigor.svg)]() [![GitHub issues](https://img.shields.io/github/issues/bauerelizabeth07139/dsh-math-rigor.svg)]()
 [![GitHub release](https://img.shields.io/github/v/release/bauerelizabeth07139/dsh-math-rigor.svg?color=8A2BE2)]() [![CI status](https://img.shields.io/github/actions/workflow/status/bauerelizabeth07139/dsh-math-rigor/tests.yml.svg?branch=main)]()
-[![version](https://img.shields.io/badge/plugin-0.2.3-8A2BE2.svg)]() [![License](https://img.shields.io/badge/license-MIT-brightgreen.svg)](LICENSE) [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)]() [![MCP](https://img.shields.io/badge/MCP-2.x-8A2BE2.svg)]() [![tools](https://img.shields.io/badge/MCP%20tools-23-9cf.svg)]()
+[![version](https://img.shields.io/badge/plugin-0.2.4-8A2BE2.svg)]() [![License](https://img.shields.io/badge/license-MIT-brightgreen.svg)](LICENSE) [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)]() [![MCP](https://img.shields.io/badge/MCP-2.x-8A2BE2.svg)]() [![tools](https://img.shields.io/badge/MCP%20tools-23-9cf.svg)]()
 
 </div>
 
+> **0.2.4**:用真实数学重新测了一遍——不是"工具不崩"，而是"答案对不对"。这一轮发现 7 个缺陷,其中 5 个会返回**数学上错误的结论**:
+> `x = 1 | x = 2` 曾被解析成三个合取式（于是 `n^2 % 4 = 0 | n^2 % 4 = 1` 这个真命题被判为 `refuted`，还附了个"反例" `n = 0`）；
+> `symbolic_eval` 的 `sum`/`product` 把算子应用了两次（`Sum(k,(k,1,100))` 回答 **505000**、`Product(k,(k,1,5))` 回答 **120⁵**、Basel 求和回答 **`oo`**）；
+> `verify_identity` 遇到二项式求和会**永不返回**；声明的整数域没在抽样时生效，真恒等式可能被"反驳"；
+> `2^n` 会把 z3 拖进超越数理论并**无视求解器超时**（实测 2s 超时下 40s 仍在跑），而 `prime` 这类不可解释谓词曾让 z3 用"素数集为空"的模型把**欧几里得定理判成 `refuted`**。
+> 另有审计漏洞（`2 + 2 = 5` 标成 `premise` 就能混成 `sound_with_gaps`）与 `diff arctan(x)` 返回未求值导数。同时把整除类命题的证明提速约 10 倍（`6 | n^3 - n` 30s → 3.1s）。详见 [CHANGELOG.md](CHANGELOG.md)。
+>
 > **0.2.3**:并发工具调用不再能杀死服务器——z3 的全局上下文不是线程安全的，而 MCP 传输可能同时派发多个请求；`rigor/engine.py` 现在用一把进程级 `RLock` 串行化引擎访问，SMT 入口与服务器工具守卫都会取它（0.2.3）。同类修正：`P(a) |- forall x: P(x)` 不再在 z3py 内部抛 `AttributeError`（谓词实参的排序现在跨出现统一）；无前提的 `arithmetic` 步（如 `2 + 2 = 5`）会被真正推翻，而不再只记为 unchecked；`symbolic_numeric` 对百万项求和不再挂死（精确闭式仅在约 2500 项以内尝试）。详见 [CHANGELOG.md](CHANGELOG.md)。
 >
 > **0.2.2**:`find_counterexample` 遵守量词里声明的定义域(0.2.1);`number_theory` 直接接受 JSON 整数(0.2.1);递归上限提高,长表达式不再在 ~300 项就报 RecursionError,超限时给出可操作的错误(0.2.2)。

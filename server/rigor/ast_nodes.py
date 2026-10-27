@@ -254,16 +254,93 @@ def _looks_propositional(token: Token | None) -> bool:
     return False
 
 
+# Names that only occur as predicates.  `even(n) | odd(n)` is a disjunction, while
+# `6 | n` is a divisibility statement, and the two must not be confused.
+_PREDICATE_NAMES = {
+    "even", "odd", "prime", "is_prime", "composite", "divides", "divisible",
+    "coprime", "is_coprime", "congruent", "reflexive", "symmetric", "transitive",
+}
+
+_RELATION_TOKENS = {
+    "=", "==", "!=", "<", "<=", ">", ">=", "≠", "≤", "≥", "∈", "∉",
+}
+_CONNECTIVE_TOKENS = {
+    "&", "&&", "∧", "∨", "||", "->", "=>", "==>", "-->", "<->", "<=>", "→", "↔",
+}
+_OPERAND_BREAK_TOKENS = {",", ":", ";", "(", "[", "{", "in"}
+
+
 def _propositional_on_the_left(tokens: list[Token], index: int) -> bool:
     if index == 0:
         return False
     previous = tokens[index - 1]
     if previous.text in _CLOSERS:
         # P(x) | ... reads as a disjunction of predicates
-        if _looks_propositional(_token_before_group(tokens, index - 1)):
+        name = _token_before_group(tokens, index - 1)
+        if _looks_propositional(name):
+            return True
+        if name is not None and name.text in _PREDICATE_NAMES:
             return True
         return _looks_propositional(_first_inside_before(tokens, index - 1))
     return _looks_propositional(previous)
+
+
+def _side_is_formula(tokens: list[Token], index: int, step: int) -> bool:
+    """Does the operand on one side of ``tokens[index]`` read as a formula?
+
+    ``|`` between two *statements* is disjunction, and stating the condition as
+    "the side contains a relation or a connective at bracket depth zero" is what
+    makes ``x = 1 | x = 2`` a disjunction instead of a chained relation.  Only a
+    side built from arithmetic terms can be the left operand of a divisibility
+    claim, so no correct input is lost.
+    """
+    j = index + step
+    depth = 0
+    while 0 <= j < len(tokens):
+        token = tokens[j]
+        text = token.text
+        if text in _CLOSERS:
+            depth += 1
+        elif text in _OPENERS:
+            if depth == 0:
+                if step < 0:
+                    # a group closes the operand: look at what names it
+                    name = tokens[j - 1].text if j > 0 else ""
+                    if name in _PREDICATE_NAMES:
+                        return True
+                    return False
+                # `| ( ... )`: the operand is the group, so look inside it
+                return _group_contains_formula(tokens, j)
+            depth -= 1
+        elif depth == 0:
+            if text in _NEGATIONS:
+                pass
+            elif text in _RELATION_TOKENS or text in _CONNECTIVE_TOKENS:
+                return True
+            elif text in ("and", "or"):
+                return True
+            elif text in ("not",):
+                pass
+            elif text in _OPERAND_BREAK_TOKENS:
+                return False
+        j += step
+    return False
+
+
+def _group_contains_formula(tokens: list[Token], open_index: int) -> bool:
+    """True when the bracketed group starting at ``open_index`` holds a formula."""
+    depth = 0
+    for j in range(open_index, len(tokens)):
+        text = tokens[j].text
+        if text in _OPENERS:
+            depth += 1
+        elif text in _CLOSERS:
+            depth -= 1
+            if depth == 0:
+                return False
+        elif depth == 1 and (text in _RELATION_TOKENS or text in _CONNECTIVE_TOKENS):
+            return True
+    return False
 
 
 def _propositional_on_the_right(tokens: list[Token], index: int) -> bool:
@@ -320,6 +397,12 @@ def _disambiguate_pipes(tokens: list[Token]) -> list[Token]:
             continue
         if _propositional_on_the_left(tokens, index) and \
                 _propositional_on_the_right(tokens, index):
+            out.append(Token("uni", "∨", token.pos))
+        elif _side_is_formula(tokens, index, -1) and _side_is_formula(tokens, index, +1):
+            # `x = 1 | x = 2`, `n % 2 = 0 | n % 2 = 1`: a bar between two
+            # statements is disjunction, never divisibility.  Without this the
+            # bar became `∣` and the parser read the whole thing as a *chain* of
+            # relations, so `a = b | a = c` silently became three conjuncts.
             out.append(Token("uni", "∨", token.pos))
         else:
             out.append(Token("uni", "∣", token.pos))
@@ -586,7 +669,20 @@ class _Parser:
         if not chain:
             return left
         if len(chain) == 1:
-            return Cmp(chain[0][0], left, chain[0][1])
+            op, rhs = chain[0]
+            if op in ("divides", "not_divides") and (is_formula(left) or is_formula(rhs)):
+                raise ParseError(
+                    "`|` needs arithmetic operands: it is the divisibility relation here. "
+                    "For a disjunction between two statements write `||` or `or`, and for "
+                    "divisibility write `divides(a, b)` or `a % b = 0`."
+                )
+            return Cmp(op, left, rhs)
+        if any(op in ("divides", "not_divides") for op, _ in chain):
+            raise ParseError(
+                "`|` cannot be chained with other relations. A bar between two statements "
+                "is disjunction, so write `||` or `or`; a bar between two integers is "
+                "divisibility, so write `divides(a, b)` or `a % b = 0`."
+            )
         # chained relation a < b < c  ==>  a < b && b < c
         parts: list[Node] = []
         prev = left

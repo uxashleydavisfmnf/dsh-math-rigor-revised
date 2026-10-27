@@ -1,5 +1,106 @@
 # Changelog
 
+## 0.2.4 — measured against real mathematics
+
+The 0.2.3 work probed every tool with synthetic claims: it established that the
+tools answer, agree with themselves, and do not crash. This release came out of
+running an ordinary mathematical workload through them — divisibility lemmas,
+classical inequalities, closed forms, textbook integrals, and four complete
+proofs audited step by step. That is a different kind of test, and it found a
+different kind of defect: five of the seven below return a *wrong mathematical
+answer*, not a wrong shape, and three of those had been reported as correct.
+
+### Fixed
+
+- **`x = 1 | x = 2` parsed as three conjoined claims.** A single `|` between two
+  statements is disjunction, but the tokenizer only recognised it when both sides
+  began with a capital letter, so a bar between two *relations* became the
+  divisibility operator and `parse_cmp` then read the whole input as a chained
+  relation: `a = b | a = c` parsed to `And(a = b, b | a, a = c)`. Measured on
+  0.2.3, `forall n in Z: n^2 % 4 = 0 | n^2 % 4 = 1` — a true statement — came
+  back `refuted` with the "counterexample" `n = 0`. A bar is now a disjunction
+  whenever either side is a formula (it contains a relation or a connective at
+  bracket depth zero, or it is a call to a predicate such as `even(n)`), a bar
+  between two arithmetic terms is still divisibility, and a `|` that would be
+  chained with other relations is rejected instead of being read as a
+  conjunction.
+- **`symbolic_eval` applied `sum` and `product` twice.** `Sum(k, (k, 1, 100))`
+  already *is* a summation, and the expression is translated unevaluated, so
+  `sp.summation` summed the whole sum again over the same index. Every such
+  result was wrong: `Sum(k, (k, 1, 100))` answered **505000** instead of 5050,
+  `Sum(k^2, (k, 1, 10))` answered **3850** instead of 385, `Product(k, (k, 1, 5))`
+  answered **24883200000** (120^5) instead of 120, and the Basel sum answered
+  **`oo`** instead of `pi^2/6`. The operator is now applied exactly once.
+- **`verify_identity` never returned on a binomial sum.** Sampling substituted a
+  rational into the upper bound of `Sum(binomial(n, k), (k, 0, n))`, leaving a
+  summation with a fractional limit, and `sp.N` then attempted a symbolic
+  summation that never finished: `Sum(binomial(n,k),(k,0,n)) = 2^n` was still
+  running after 25s and had to be killed. Sampling now adds such a sum up
+  explicitly over its concrete integer bounds (and skips the sample when the
+  bounds are not integers), so the identity is decided. Sums are also closed
+  before the difference is simplified, which is what makes the binomial
+  identities provable at all instead of merely "inconclusive".
+- **Declared domains were not enforced during sampling, so a true identity could
+  be "refuted".** `symbolic.py` defined `_is_admissible_sub` twice; the second
+  definition shadowed the first and its integer-domain check was dead code
+  (`if ... if False else False`), so `assumptions=["n: integer"]` admitted
+  `n = 3/2`. There is one definition now, and it enforces `integer`, `natural`,
+  `even` and `odd`. Sampling also no longer feeds a `Sum` an upper bound below
+  its lower bound, where the sum is empty and an identity that holds for
+  `n >= 0` would look false.
+- **`2^n` froze the solver, ignoring its own timeout.** An integer base raised to
+  a symbolic exponent was lifted to the reals, so z3 saw `2 ** ToReal(n)` and
+  entered the transcendental power theory: measured directly, the query
+  `forall n in N: n >= 5 -> 2^n > n^2` with `solver.set("timeout", 2000)` was
+  still running at 40s. An ordinary exercise hung the whole server. Integers
+  raised to an integer exponent now stay in the integers (`2^n > 0` is proved,
+  and the `n >= 5` claim answers "unknown" in 8s); a *constant* base with a
+  symbolic real exponent is refused with a message that points at
+  `verify_induction`.
+- **A refutation could rest on reinterpreting an uninterpreted predicate.**
+  `prime` has no theory in z3, so the solver falsified Euclid's theorem
+  (`forall n in N: exists p in N: p > n & prime(p)`) by taking the extension of
+  `prime` to be empty, and the audit then reported the theorem as **REFUTED**
+  with the witness `n = 0`. Unsat is interpretation-independent and remains a
+  proof; sat over an applied uninterpreted symbol describes the solver's freedom,
+  not the mathematics, so it is reported as undecided. Pure arithmetic claims
+  (`forall x in R: x^2 >= x`) are still refuted as before.
+- **A false step could be laundered by relabelling it.** The 0.2.3 fix refuted
+  premiseless `arithmetic`/`algebra`/`computation` steps, but `premise`,
+  `definition`, `machine_verified` and `theorem_citation` still granted their
+  statement outright, so `2 + 2 = 5` labelled `premise` audited as
+  `sound_with_gaps` — "structurally sound, nothing refuted" — for a session whose
+  only step was arithmetic nonsense. Every premiseless step now gets one short
+  machine check; a refutation is recorded, and silence still leaves it
+  unchecked.
+- **`diff arctan(x)` answered `Derivative(arctan(x), x)`.** The `arc…` spellings
+  were missing from the function table, so the name became an undefined sympy
+  function and the unevaluated derivative was returned as if it were the result.
+  `arcsin`, `arccos`, `arctan`, `arctg`, `arcsinh`, `arccosh`, `arctanh`, `lg`
+  and `tg` are now recognised.
+
+### Changed
+
+- **Divisibility claims are proved about ten times faster.** A 20s direct query
+  ran before the residue split, and — because z3 only escalates to the expensive
+  nonlinear tactics once the cheap ones have failed — a *larger* budget made the
+  same question slower, not better: `forall n in Z: 6 | n^3 - n` took 40s with a
+  20s query budget and 2s with a 1s one. The order is now a short probe (1.5s),
+  then the residue split with a capped share per case, then the long query, which
+  is also capped when the split has already covered every integer variable.
+  Measured: `6 | n^3 - n` 30s → 3.1s, `30 | n^5 - n` 30s → 3.1s, the false
+  `sqrt(2)` statement 44s → 17.5s (still honestly `inconclusive`).
+
+### Tests
+
+- `tests/test_real_projects.py` (new, 79 checks) is the workload this release was
+  found with: divisibility and parity lemmas, AM-GM and Cauchy-Schwarz, closed
+  forms for sums and products, the binomial identities, textbook derivatives,
+  integrals, limits and series, exact integer facts, logic, and four complete
+  proofs driven through the session audit (a fully machine-checked lemma chain,
+  a planted error, an undischarged assumption, a disclosed gap, and the
+  laundering case). It runs in about 20s.
+
 ## 0.2.3 — concurrent tool calls no longer kill the server
 
 ### Fixed

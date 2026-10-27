@@ -28,6 +28,7 @@ import z3
 
 from .ast_nodes import (
     And,
+    App,
     BigOp,
     Bin,
     Cmp,
@@ -66,6 +67,15 @@ STATUS_UNPARSEABLE = "unparseable"
 _MAX_SUBPROBLEMS = 512
 _MAX_SPLIT_MODULUS = 64
 _DEFAULT_BUDGET_MS = 60000
+
+# A short first look at the goal.  z3 escalates to costly tactics only when the
+# cheap ones have not settled the question, so a *smaller* per-query budget is
+# often both faster and sufficient: `forall n in Z: 6 | n^3 - n` was proved in
+# 2s with a 1s budget and in 40s with a 20s budget (same residue split, same
+# verdict).  See also `_RESIDUE_CASE_MS`.
+_FAST_PROBE_MS = 1500
+_RESIDUE_CASE_MS = 1200
+_POST_SPLIT_MS = 6000
 
 
 @dataclass
@@ -471,20 +481,36 @@ def check_entailment(
     if freed or body is not goal_node:
         attempts.append(("refuted the negated goal with quantifiers kept", goal_node))
 
+    # A `sat` answer over an *interpreted* signature is only a counterexample if
+    # the interpretation is the one the claim is about.  z3 has no theory of
+    # `prime`, so it falsified `forall n in N: exists p in N: p > n & prime(p)`
+    # by taking the extension of `prime` to be empty -- Euclid refuted with
+    # `n = 0`.  Unsat is interpretation-independent and stays sound; sat over an
+    # uninterpreted application does not describe the mathematics, so it is
+    # reported as undecided instead of as a refutation.
+    loose = sorted(uninterpreted_applications(goal_node, functions))
+
     last_reason: str | None = None
-    for index, (method, target) in enumerate(attempts):
-        remaining = max(1, len(attempts) - index)
-        try:
-            attempt = _refute(pre, target, sorts, _budgeted(timeout_ms, deadline, remaining))
-        except TranslateError as exc:
-            return SmtOutcome(STATUS_ERROR, method="the statement could not be encoded",
-                              sorts=sorts.report(), notes=notes, reason=str(exc),
-                              elapsed_ms=int((time.time() - started) * 1000))
+
+    def decided(attempt: SmtOutcome, method: str) -> SmtOutcome | None:
+        """Turn a decided attempt into the answer, or None to keep trying."""
         notes.extend(attempt.notes)
         if attempt.status == STATUS_PROVEN:
             return SmtOutcome(STATUS_PROVEN, method=method, sorts=sorts.report(),
                               notes=notes, elapsed_ms=int((time.time() - started) * 1000))
         if attempt.status == STATUS_REFUTED:
+            if loose:
+                notes.append(
+                    f"the solver can falsify this claim only by choosing the meaning of "
+                    f"{', '.join(loose)}; that is not a counterexample in the intended "
+                    "mathematics, so the claim is reported as undecided"
+                )
+                return SmtOutcome(
+                    STATUS_UNKNOWN, method="undecided: the claim mentions "
+                    f"{', '.join(loose)}, which the solver may reinterpret freely",
+                    sorts=sorts.report(), notes=notes,
+                    reason="refutation would depend on an uninterpreted symbol",
+                    elapsed_ms=int((time.time() - started) * 1000))
             model = attempt.model
             if not model:
                 notes.append(
@@ -495,17 +521,40 @@ def check_entailment(
                               method="z3 produced an assignment falsifying the goal",
                               model=model, sorts=sorts.report(), notes=notes,
                               elapsed_ms=int((time.time() - started) * 1000))
+        return None
+
+    # -- 1. one short direct attempt --------------------------------------- #
+    # A large per-query budget makes the same easy question *slower*: z3 only
+    # escalates to the expensive nonlinear tactics when the cheap ones have not
+    # already settled it, so `forall n in Z: 6 | n^3 - n` took 40s with a 20s
+    # query budget and 2s with a 1s one.  Ask briefly first; most real claims
+    # are decided here.
+    for method, target in attempts:
+        try:
+            attempt = _refute(pre, target, sorts, min(_FAST_PROBE_MS, timeout_ms))
+        except TranslateError as exc:
+            return SmtOutcome(STATUS_ERROR, method="the statement could not be encoded",
+                              sorts=sorts.report(), notes=notes, reason=str(exc),
+                              elapsed_ms=int((time.time() - started) * 1000))
+        answer = decided(attempt, method)
+        if answer is not None:
+            return answer
         last_reason = attempt.reason
 
+    # -- 2. residue case split --------------------------------------------- #
+    # Cheap, and complete for divisibility over the integers, so it runs before
+    # the long direct query rather than after it has burned the whole budget.
+    split_tried = False
     if allow_residue:
         targets = freed or sorted(collect_symbols(whole))
         groups = residue_groups(body, sorts, targets)
         for description, variants in groups:
+            split_tried = True
             ok = True
             detail = ""
             for position, variant in enumerate(variants):
-                share = _budgeted(timeout_ms, deadline,
-                                  len(variants) - position + 1)
+                share = min(_RESIDUE_CASE_MS, _budgeted(timeout_ms, deadline,
+                                                        len(variants) - position))
                 if share <= 0:
                     ok = False
                     detail = "time budget exhausted"
@@ -536,6 +585,28 @@ def check_entailment(
                 )
             notes.append(f"residue split on {description} did not close: {detail}")
 
+    # -- 3. the long direct attempt ---------------------------------------- #
+    # When the split already covered every integer variable and failed, a longer
+    # direct query is not worth the full budget.
+    for method, target in attempts:
+        remaining = max(1, len(attempts))
+        budget = _budgeted(timeout_ms, deadline, remaining)
+        if split_tried:
+            budget = min(budget, _POST_SPLIT_MS)
+        if budget <= 0:
+            break
+        try:
+            attempt = _refute(pre, target, sorts, budget)
+        except TranslateError as exc:
+            return SmtOutcome(STATUS_ERROR, method="the statement could not be encoded",
+                              sorts=sorts.report(), notes=notes, reason=str(exc),
+                              elapsed_ms=int((time.time() - started) * 1000))
+        answer = decided(attempt, method)
+        if answer is not None:
+            return answer
+        last_reason = attempt.reason
+
+
     return SmtOutcome(STATUS_UNKNOWN, method="z3 could not decide", sorts=sorts.report(),
                       notes=notes,
                       reason=last_reason or "solver returned unknown",
@@ -544,6 +615,44 @@ def check_entailment(
 
 def collect_free_names(node: Node) -> set[str]:
     return collect_symbols(node)
+
+
+# Applications the translator maps into a real theory.  Anything else is
+# uninterpreted, which means z3 is free to give it any meaning it likes.
+_KNOWN_APPLICATIONS = {
+    "sqrt", "abs", "Abs", "exp", "ln", "log", "lg", "sin", "cos", "tan", "tg",
+    "cot", "sec", "csc", "asin", "acos", "atan", "arcsin", "arccos", "arctan",
+    "arctg", "sinh", "cosh", "tanh", "asinh", "acosh", "atanh", "arcsinh",
+    "arccosh", "arctanh", "floor", "ceil", "sign", "min", "max", "gcd", "lcm",
+    "factorial", "binomial", "re", "im", "conjugate", "gamma", "erf",
+    "even", "odd", "divides", "divisible", "mod",
+}
+
+
+def uninterpreted_applications(node: Node, declared: Iterable[str] = ()) -> set[str]:
+    """Names of applied symbols whose meaning the solver is free to choose.
+
+    `prime(p)` is such a symbol: z3 has no theory of primes, so it may take the
+    extension of `prime` to be empty and thereby satisfy the negation of
+    ``exists p: prime(p)``.
+
+    Schematic names are exempt, because for those a model *is* the refutation:
+    a single capital letter (the ``P(x)`` of a logic exercise) and any name the
+    caller declared in ``functions`` stand for an arbitrary predicate by
+    construction, so exhibiting one that falsifies the claim is exactly what
+    "this schema is invalid" means.
+    """
+    allowed = set(declared)
+    names: set[str] = set()
+    for current in walk(node):
+        if not isinstance(current, App) or current.name in _KNOWN_APPLICATIONS:
+            continue
+        if current.name in allowed:
+            continue
+        if len(current.name) == 1 and current.name.isupper():
+            continue
+        names.add(current.name)
+    return names
 
 
 def check_valid(
