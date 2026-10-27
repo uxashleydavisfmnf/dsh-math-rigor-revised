@@ -78,10 +78,19 @@ expect("a divisibility induction proves its base case",
 expect("a divisibility induction proves its step",
        divisibility["inductive_step"]["status"], "proven")
 
-missing_base = verify_induction("n < 2^n", "n", "0")
+broken_step = verify_induction("n^2 <= 2^n", "n", "0")
 expect("a failing inductive step reports the k that breaks it",
-       bool(missing_base.get("inductive_step", {}).get("counterexample")) or
-       missing_base["verdict"] == "inconclusive", True)
+       bool(broken_step.get("inductive_step", {}).get("counterexample")) or
+       broken_step["verdict"] == "inconclusive", True)
+
+# n < 2^n is true for every n >= 0.  Until 0.2.5 the step was handed to the
+# solver as `n+1 < 2^(n+1)` next to `n < 2^n`, two unrelated power terms, and
+# came back undecided; `a^(k+1) = a * a^k` is now applied first.
+exponential = verify_induction("n < 2^n", "n", "0")
+expect("an exponential induction is proved once a^(k+1) is factored",
+       exponential["verdict"], "proven")
+expect("and the factored obligation is reported",
+       "checked_form" in exponential, True)
 
 no_variable = verify_induction("m^2 >= 0", "n", "0")
 expect("an induction variable that does not occur is rejected",

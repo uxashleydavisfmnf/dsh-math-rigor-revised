@@ -372,11 +372,17 @@ def proof_add_step(
         lemma = session.by_id(proves_lemma)
         if lemma is not None and lemma.kind == "lemma":
             lemma.proved = entry.verdict in ("verified", "unchecked")
-            lemma.from_ids = entry.from_ids
             if not lemma.proved:
                 lemma.note = (lemma.note + " the proof attempt was refuted").strip()
             else:
                 lemma.rule = entry.rule
+                lemma.machine_checked = entry.verdict == "verified"
+                # Record *which step* discharged the obligation.  This used to
+                # copy the step's own citations onto the lemma, which made the
+                # lemma -- written earlier in the file -- cite a later step, so
+                # every proof that proved its lemmas audited as "flawed:
+                # forward reference" no matter how correct it was.
+                lemma.proved_by = entry.id
     session.save()
     return _json({
         "step": entry.to_dict(),

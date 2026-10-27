@@ -10,10 +10,16 @@
 
 [![GitHub stars](https://img.shields.io/github/stars/bauerelizabeth07139/dsh-math-rigor.svg?color=gold)]() [![GitHub forks](https://img.shields.io/github/forks/bauerelizabeth07139/dsh-math-rigor.svg)]() [![GitHub issues](https://img.shields.io/github/issues/bauerelizabeth07139/dsh-math-rigor.svg)]()
 [![GitHub release](https://img.shields.io/github/v/release/bauerelizabeth07139/dsh-math-rigor.svg?color=8A2BE2)]() [![CI status](https://img.shields.io/github/actions/workflow/status/bauerelizabeth07139/dsh-math-rigor/tests.yml.svg?branch=main)]()
-[![version](https://img.shields.io/badge/plugin-0.2.4-8A2BE2.svg)]() [![License](https://img.shields.io/badge/license-MIT-brightgreen.svg)](LICENSE) [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)]() [![MCP](https://img.shields.io/badge/MCP-2.x-8A2BE2.svg)]() [![tools](https://img.shields.io/badge/MCP%20tools-23-9cf.svg)]()
+[![version](https://img.shields.io/badge/plugin-0.2.5-8A2BE2.svg)]() [![License](https://img.shields.io/badge/license-MIT-brightgreen.svg)](LICENSE) [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)]() [![MCP](https://img.shields.io/badge/MCP-2.x-8A2BE2.svg)]() [![tools](https://img.shields.io/badge/MCP%20tools-23-9cf.svg)]()
 
 </div>
 
+> **0.2.5**:改用**项目阶梯**验证——从"1000 项求和"到"Schur 不等式"到"带引理的完整证明"再到"服务器还活不活"，共 9 级。结果修掉 3 个缺陷:
+> ① **证明引理反而让整份证明判为 `flawed`**——`proves_lemma` 把证明步骤的引用抄到引理上，引理在文件里更早，于是被当成"前向引用"（任何多引理的机器校验证明都会中招）；
+> ② **指数归纳判不出来且很慢**——`2^n >= n+1` 的归纳步被原样交给 z3（`2^n` 与 `2^(n+1)` 是两个不相干的幂项），21.7s 后仍 `undecided`；现在先做 `a^(k+1) = a·a^k` 再判定，**0.02s `proven`**，`2^n > n^2`、`n < 2^n`、`3^n >= 1+2n` 也随之可证；
+> ③ **`i` 没被当成虚数单位**——`(cos x + i sin x)^3` 展开出 `i**3*sin(x)**3`，棣莫弗公式与欧拉恒等式都证不了。现在裸 `i` 视为 `I`，但被 `Sum`/量词绑定、或用 `variables`/`substitutions` 声明时仍作符号。
+> 稳定性一并验证：80 步会话换进程重载、1200 项表达式、400 层嵌套、12 条流水线并发、20 种畸形输入、750 次连续调用无泄漏。详见 [CHANGELOG.md](CHANGELOG.md)。
+>
 > **0.2.4**:用真实数学重新测了一遍——不是"工具不崩"，而是"答案对不对"。这一轮发现 7 个缺陷,其中 5 个会返回**数学上错误的结论**:
 > `x = 1 | x = 2` 曾被解析成三个合取式（于是 `n^2 % 4 = 0 | n^2 % 4 = 1` 这个真命题被判为 `refuted`，还附了个"反例" `n = 0`）；
 > `symbolic_eval` 的 `sum`/`product` 把算子应用了两次（`Sum(k,(k,1,100))` 回答 **505000**、`Product(k,(k,1,5))` 回答 **120⁵**、Basel 求和回答 **`oo`**）；

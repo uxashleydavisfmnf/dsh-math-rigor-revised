@@ -123,6 +123,7 @@ class Entry:
     note: str = ""
     name: str = ""              # lemmas
     proved: bool = False        # lemmas
+    proved_by: str = ""         # lemmas: the step that discharged the obligation
     assumed: bool = False       # lemmas declared without proof
     added_at: float = field(default_factory=time.time)
 
@@ -269,6 +270,24 @@ def check_entry(session: ProofSession, entry: Entry) -> Entry:
         )
         return entry
 
+    if entry.kind == "lemma":
+        # A lemma is an obligation, not an inference: its content is checked by the
+        # step that discharges it.  Re-checking it as if it were a step made every
+        # proved lemma report "not an instance of <rule>" -- or, when the step's
+        # citations were copied onto it, a forward reference.
+        if entry.assumed:
+            entry.verdict = STEP_ASSUMED
+            entry.machine_checked = False
+            entry.detail = "declared without proof; disclosed as an assumption of the argument"
+        elif entry.proved_by:
+            entry.verdict = STEP_VERIFIED if entry.machine_checked else STEP_UNCHECKED
+            entry.detail = f"obligation discharged by step {entry.proved_by}"
+        else:
+            entry.verdict = STEP_UNCHECKED
+            entry.machine_checked = False
+            entry.detail = "outstanding obligation: prove it, then pass its id as proves_lemma"
+        return entry
+
     try:
         return _check_entry_inner(session, entry, rule)
     except Exception as exc:  # noqa: BLE001 - report, never crash the session
@@ -410,7 +429,9 @@ def audit(session: ProofSession) -> dict[str, Any]:
 
     for entry in session.entries:
         # -- structural checks -------------------------------------------- #
-        if entry.kind in ("given", "assumption"):
+        if entry.kind in ("given", "assumption", "lemma"):
+            # A lemma's citations belong to the step that discharges it, so a
+            # lemma legitimately cites nothing itself.
             continue
         rule = (entry.rule or "").strip().lower()
         if rule and not entry.from_ids and rule not in PREMISELESS_OK and (
@@ -659,6 +680,8 @@ def _export_markdown(session: ProofSession) -> str:
                 STEP_ASSUMED: "assumed",
             }.get(entry.verdict, entry.verdict)
             cites = f" [{', '.join(entry.from_ids)}]" if entry.from_ids else ""
+            if entry.proved_by:
+                cites += f" — proved by {entry.proved_by}"
             rule = f" by *{entry.rule}*" if entry.rule else ""
             name = f" ({entry.name})" if entry.name else ""
             lines.append(f"{entry.id}. {entry.statement}")

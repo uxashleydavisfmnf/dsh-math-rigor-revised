@@ -587,8 +587,20 @@ def verify_induction(
 
     successor = Bin("add", Sym(name), Num("1"))
     step_predicate = substitute(closed, {name: successor})
+    # `2^(n+1)` and `2^n` are the same atom only after the algebraic step every
+    # written proof makes: 2^(n+1) = 2 * 2^n.  Without it the solver sees two
+    # unrelated power terms, and a textbook induction like 2^n >= n+1 came back
+    # "undecided" after 21s.  The rewrite is exact for a numeral base, so it is
+    # reported rather than applied silently.
+    factored = _factor_successor_powers(step_predicate, name)
+    if factored.text() != step_predicate.text():
+        notes.append(
+            f"rewrote powers of {name}+1 as products of powers of {name} "
+            f"(a^({name}+1) = a * a^{name}) before checking the step"
+        )
+        result["checked_form"] = factored.text()
     hypothesis = And((Cmp("ge", Sym(name), start_node), closed))
-    step = Quant("forall", name, binder_sort, Imp(hypothesis, step_predicate))
+    step = Quant("forall", name, binder_sort, Imp(hypothesis, factored))
     step_outcome = check_valid(step, functions=functions, timeout_ms=timeout_ms)
     result["inductive_step"] = {
         "obligation": step.text(),
@@ -624,6 +636,46 @@ def verify_induction(
             "explicit closed form is needed"
         ),
     }
+
+
+def _factor_successor_powers(node: Node, variable: str) -> Node:
+    """Rewrite ``a^(n+k)`` as ``a^k * a^n`` for a numeral base.
+
+    Only a numeral base is rewritten, so the identity used is
+    ``a^(n+k) = a^k * a^n`` with no side conditions at all.
+    """
+    from .smt import _rebuild
+
+    children = children_of(node)
+    rebuilt = _rebuild(node, [_factor_successor_powers(c, variable) for c in children]) \
+        if children else node
+    if isinstance(rebuilt, Bin) and rebuilt.op == "pow":
+        base, exponent = rebuilt.left, rebuilt.right
+        offset = _successor_offset(exponent, variable)
+        if offset and isinstance(base, Num):
+            try:
+                value = int(base.value)
+            except ValueError:
+                return rebuilt
+            if value < 1:
+                return rebuilt
+            head = base if offset == 1 else Bin("pow", base, Num(str(offset)))
+            return Bin("mul", head, Bin("pow", base, Sym(variable)))
+    return rebuilt
+
+
+def _successor_offset(exponent: Node, variable: str) -> int:
+    """``n + 3`` -> 3, ``3 + n`` -> 3, anything else -> 0."""
+    if not isinstance(exponent, Bin) or exponent.op != "add":
+        return 0
+    for left, right in ((exponent.left, exponent.right), (exponent.right, exponent.left)):
+        if isinstance(left, Sym) and left.name == variable and isinstance(right, Num):
+            try:
+                value = int(right.value)
+            except ValueError:
+                return 0
+            return value if value > 0 else 0
+    return 0
 
 
 def _eval_predicate_at(predicate: Node, name: str, point: Node,

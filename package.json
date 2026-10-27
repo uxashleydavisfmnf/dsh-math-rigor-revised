@@ -1,6 +1,6 @@
 {
   "name": "dsh-math-rigor",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "Auditable mathematical proving for DeepSeek Harness: a local stdio MCP server with 23 tools, a bundled workflow skill and two slash commands. proven / refuted / inconclusive are never conflated, and unproven steps are reported, not hidden.",
   "type": "module",
   "main": "./index.js",

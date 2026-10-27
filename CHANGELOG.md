@@ -1,5 +1,66 @@
 # Changelog
 
+## 0.2.5 — a ladder of real projects, and what it broke
+
+0.2.4 checked single statements against their answers. This release ran *tasks*
+instead — nine of them, in the order a person would meet them: a finite sum, a
+textbook induction chapter, congruences, competition inequalities, trigonometry
+and complex numbers, an applied derivation (the solid angle of a circular
+window), Schur's inequality, a whole proof with lemmas, and then the question of
+whether the server survives being used that way at all.
+
+Two of the three defects below are in the *audit*, which is the part that is
+supposed to catch mistakes, and one is a three-character notation problem that
+made De Moivre's formula unprovable.
+
+### Fixed
+
+- **Proving a lemma made the whole proof `flawed`.** `proof_add_step` with
+  `proves_lemma` copied the proving step's `from_ids` onto the lemma entry. The
+  lemma is written *earlier* in the file than the step that discharges it, so
+  the audit saw a lemma citing a later id and reported "cites 's2', which does
+  not come earlier in the proof (this would be a circular or forward
+  reference)" — for every correct, fully machine-checked, multi-lemma proof.
+  A lemma now records `proved_by` (which step discharged the obligation) and is
+  no longer re-checked as if it were an inference of its own; the "cites no
+  premises" warning is likewise no longer raised for lemmas.
+- **An exponential induction was undecided, and slow about it.** The inductive
+  step of `2^n >= n+1` was handed to z3 as `n >= 0 & 2^n >= n+1 -> 2^(n+1) >= n+2`,
+  in which `2^n` and `2^(n+1)` are two unrelated power terms; it came back
+  undecided after 21.7s. `verify_induction` now applies the step every written
+  proof applies, `a^(k+1) = a * a^k`, for a numeral base before checking, and
+  reports the rewritten obligation as `checked_form`. Measured after the change:
+  `2^n >= n+1` 0.02s `proven`, `2^n > n^2` (from n = 5) 0.01s `proven`,
+  `3^n >= 1 + 2n` 0.01s `proven`, `n < 2^n` `proven` — the last three were all
+  `inconclusive` before.
+- **`i` was not the imaginary unit.** Every textbook writes `cos x + i sin x`,
+  and with `i` treated as an ordinary symbol the cube expanded to
+  `i**3*sin(x)**3 + ...` — arithmetically correct and mathematically useless,
+  which also left De Moivre's formula and Euler's identity unprovable. A bare
+  `i` is now read as `I` unless the caller declared it in `variables`,
+  substituted it, or bound it (`Sum(i^2, (i, 1, n))`, `forall i in Z`), so the
+  index letter is never captured.
+
+### Changed
+
+- `tests/test_verify.py` expected `n < 2^n` to stay undecided. That expectation
+  encoded a weakness rather than a fact — the statement is true, and it is now
+  proved — so the "failing inductive step" case moved to `n^2 <= 2^n` (false at
+  n = 3), and two checks were added for the exponential induction.
+
+### Tests
+
+- `tests/test_project_ladder.py` (new, 45 checks) is the ladder itself: nine
+  levels from a 1,000-term sum to Schur's inequality and an audited two-lemma
+  proof, plus the stability levels — 40 appended steps, a 1,200-term expression,
+  400 levels of nesting, 20 malformed statements, 250 calls against the heap, and
+  the budget behaviour of the two claims that used to hang. About 45s.
+- The heap check first compared 0MB with 0MB: `GetProcessMemoryInfo` was called
+  without declaring `argtypes`, so the 64-bit process handle was truncated, the
+  call returned 0, and the counters stayed at zero — a test that could not fail.
+  It now reports the measurement (105MB → 130MB over 750 calls) and fails loudly
+  when no measurement can be taken.
+
 ## 0.2.4 — measured against real mathematics
 
 The 0.2.3 work probed every tool with synthetic claims: it established that the

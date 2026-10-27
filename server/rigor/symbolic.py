@@ -15,7 +15,7 @@ from typing import Any, Iterable, Mapping, Sequence
 import mpmath
 import sympy as sp
 
-from .ast_nodes import App, BigOp, Node, Num, Sym, collect_symbols, parse
+from .ast_nodes import App, BigOp, Node, Num, Quant, Sym, collect_symbols, parse
 from .translate import (
     SympyContext,
     TranslateError,
@@ -168,7 +168,8 @@ def symbolic_eval(
     assumption_set = split_assumptions(assumptions)
     variables = [v.strip() for v in re.split(r"[,\s]+", variable) if v.strip()]
     ctx = _symbol_context(variables, assumption_set)
-    node = parse(expression, functions=[])
+    node = _alias_imaginary(parse(expression, functions=[]),
+                            reserved=[*variables, *(substitutions or {})])
     expr = ast_to_sympy(node, ctx)
     var = ctx.symbol(variables[0]) if variables else None
     notes: list[str] = []
@@ -394,7 +395,7 @@ def numeric_eval(
     """Evaluate an expression at high precision and report how exact the value is."""
     assumption_set = split_assumptions([])
     ctx = SympyContext()
-    node = parse(expression, functions=[])
+    node = _alias_imaginary(parse(expression, functions=[]), reserved=list(substitutions or ()))
     expr = ast_to_sympy(node, ctx)
     for name in sorted(expr.free_symbols, key=str):
         ctx.symbols.setdefault(name.name, name)
@@ -486,8 +487,8 @@ def verify_identity(
     assumption_set = split_assumptions(assumptions)
     names = [v.strip() for v in variables if str(v).strip()]
     try:
-        left_node = parse(lhs, functions=[])
-        right_node = parse(rhs, functions=[])
+        left_node = _alias_imaginary(parse(lhs, functions=[]), reserved=names)
+        right_node = _alias_imaginary(parse(rhs, functions=[]), reserved=names)
     except Exception as exc:  # noqa: BLE001
         return {"verdict": VERDICT_ERROR, "reason": f"{type(exc).__name__}: {exc}"}
 
@@ -615,6 +616,38 @@ _RESERVED_SYMBOLS = {
     "oo", "infinity", "inf", "pi", "e", "E", "I", "true", "false",
     "nan", "zoo", "True", "False",
 }
+
+
+def _alias_imaginary(node: Node, reserved: Iterable[str] = ()) -> Node:
+    """Read a bare ``i`` as the imaginary unit, unless it is a symbol here.
+
+    Every textbook writes ``cos x + i sin x``, and with ``i`` taken as an
+    ordinary symbol the cube expanded to ``i**3*sin(x)**3 + ...`` -- arithmetically
+    correct, mathematically useless, and enough to make De Moivre's formula
+    unprovable.  ``i`` stays a symbol when the caller declared it, substituted
+    it, or bound it (``Sum(i^2, (i, 1, n))``, ``forall i in Z``), so the index
+    letter is never captured.
+    """
+    from .smt import substitute
+
+    if "i" in set(reserved):
+        return node
+    if _binds(node, "i"):
+        return node
+    return substitute(node, {"i": Sym("I")})
+
+
+def _binds(node: Node, name: str) -> bool:
+    """True when some quantifier or sum in ``node`` binds ``name``."""
+    stack: list[Node] = [node]
+    while stack:
+        current = stack.pop()
+        if isinstance(current, Quant) and current.var == name:
+            return True
+        if isinstance(current, BigOp) and current.var == name:
+            return True
+        stack.extend(_children(current))
+    return False
 
 
 def _bound_symbols(node: Node) -> set[str]:
